@@ -12,6 +12,7 @@ import {
   push,
   ref,
   remove,
+  serverTimestamp,
   set,
 } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-database.js';
 
@@ -145,8 +146,8 @@ async function connect() {
   remoteDescriptionSet = false;
   try {
     await set(roomRef, {
-      expiresAt: Date.now() + 10 * 60 * 1000,
-      members: { [auth.currentUser.uid]: 'parent' },
+      createdAt: serverTimestamp(),
+      parentUid: auth.currentUser.uid,
     });
     signalUnsubscribe = onChildAdded(signalRef, snapshot => {
       handleSignal(snapshot.val()).catch(error => setStatus(`Signaling error: ${error.message}`));
