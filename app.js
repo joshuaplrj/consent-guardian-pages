@@ -90,11 +90,13 @@ function createPeer() {
   };
   peer.ontrack = event => {
     const track = event.track;
-    const stream = event.streams[0] || new MediaStream([track]);
-    if (track.label.toLowerCase().includes('screen')) screenVideo.srcObject = stream;
-    else if (track.label.toLowerCase().includes('camera')) cameraVideo.srcObject = stream;
+    const streamId = event.streams[0]?.id?.toLowerCase() || '';
+    const trackLabel = track.label.toLowerCase();
+    const stream = new MediaStream([track]);
+    if (streamId.includes('screen') || trackLabel.includes('screen')) screenVideo.srcObject = stream;
+    else if (streamId.includes('camera') || trackLabel.includes('camera')) cameraVideo.srcObject = stream;
     else if (!screenVideo.srcObject) screenVideo.srcObject = stream;
-    else cameraVideo.srcObject = stream;
+    else if (!cameraVideo.srcObject) cameraVideo.srcObject = stream;
     sessionCard.classList.remove('hidden');
     setStatus('Live session connected.');
   };
