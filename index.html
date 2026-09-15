@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Consent Guardian</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="card" id="connect-card">
+        <p class="eyebrow">PARENT DASHBOARD</p>
+        <h1>Consent Guardian</h1>
+        <p class="muted">A live session appears only after the child approves it on their Android device.</p>
+        <label>Signaling Worker URL<input id="worker" type="url" placeholder="https://your-worker.workers.dev" /></label>
+        <label>Parent access code<input id="access" type="password" autocomplete="off" placeholder="Worker access code" /></label>
+        <label>One-time pairing code<input id="room" autocomplete="off" minlength="6" placeholder="shared code" /></label>
+        <button id="connect">Connect as parent</button>
+        <p id="status" class="status">Not connected.</p>
+      </section>
+
+      <section class="card hidden" id="session-card">
+        <div class="toolbar"><div><p class="eyebrow">ACTIVE SESSION</p><h2>Child device</h2></div><button class="danger" id="disconnect">Disconnect</button></div>
+        <div class="media-grid">
+          <figure><figcaption>Screen</figcaption><video id="screen" autoplay playsinline></video></figure>
+          <figure><figcaption>Camera</figcaption><video id="camera" autoplay playsinline></video></figure>
+        </div>
+        <p class="muted small">This dashboard does not retain recordings. Ending the child-side session closes the connection.</p>
+      </section>
+    </main>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>
