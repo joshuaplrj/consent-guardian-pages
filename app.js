@@ -7,8 +7,10 @@ import {
   signOut,
 } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
 import {
+  get,
   getDatabase,
   onChildAdded,
+  onValue,
   push,
   ref,
   remove,
@@ -42,14 +44,19 @@ const authStatus = document.querySelector('#auth-status');
 const status = document.querySelector('#status');
 const sessionCard = document.querySelector('#session-card');
 const screenVideo = document.querySelector('#screen');
-const cameraVideo = document.querySelector('#camera');
+const frontCameraVideo = document.querySelector('#front-camera');
+const backCameraVideo = document.querySelector('#back-camera');
 
 let peer;
 let roomRef;
 let signalRef;
+let roomUnsubscribe;
 let signalUnsubscribe;
+let reconnectTimer;
+let explicitDisconnect = false;
 let pendingRemoteIce = [];
 let remoteDescriptionSet = false;
+let activeSignalSession;
 
 const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
 
@@ -60,6 +67,7 @@ function authError(error) {
     'auth/email-already-in-use': 'That email already has an account. Sign in instead.',
     'auth/invalid-credential': 'The email or password is incorrect.',
     'auth/invalid-email': 'Enter a valid email address.',
+    'auth/network-request-failed': 'Network unavailable. Check the connection and try again.',
     'auth/weak-password': 'Use a password with at least 8 characters.',
   };
   return messages[error.code] || error.message;
@@ -83,51 +91,130 @@ async function signIn() {
   }
 }
 
+function closePeer() {
+  const currentPeer = peer;
+  peer = undefined;
+  currentPeer?.close();
+}
+
+function replacePeer({ clearSession = true } = {}) {
+  closePeer();
+  if (clearSession) activeSignalSession = undefined;
+  pendingRemoteIce = [];
+  remoteDescriptionSet = false;
+  return createPeer();
+}
+
+function scheduleReconnect() {
+  if (explicitDisconnect || !roomRef || reconnectTimer) return;
+  setStatus('Network interruption detected. Reconnecting automatically…');
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = undefined;
+    if (explicitDisconnect || !roomRef) return;
+    replacePeer();
+    setStatus('Waiting for the child to reconnect…');
+  }, 1500);
+}
+
 function createPeer() {
-  peer = new RTCPeerConnection({ iceServers });
-  peer.onicecandidate = event => {
-    if (event.candidate) sendSignal('ice', JSON.stringify(event.candidate.toJSON()));
+  const connection = new RTCPeerConnection({ iceServers });
+  peer = connection;
+  connection.onicecandidate = event => {
+    if (event.candidate && connection === peer) {
+      sendSignal('ice', JSON.stringify(event.candidate.toJSON()), activeSignalSession)
+        .catch(error => setStatus(`Signaling error: ${error.message}`));
+    }
   };
-  peer.ontrack = event => {
+  connection.ontrack = event => {
     const track = event.track;
     const streamId = event.streams[0]?.id?.toLowerCase() || '';
     const trackLabel = track.label.toLowerCase();
     const stream = new MediaStream([track]);
     if (streamId.includes('screen') || trackLabel.includes('screen')) screenVideo.srcObject = stream;
-    else if (streamId.includes('camera') || trackLabel.includes('camera')) cameraVideo.srcObject = stream;
+    else if (streamId.includes('front') || trackLabel.includes('front')) frontCameraVideo.srcObject = stream;
+    else if (streamId.includes('back') || trackLabel.includes('back') || trackLabel.includes('rear')) backCameraVideo.srcObject = stream;
     else if (!screenVideo.srcObject) screenVideo.srcObject = stream;
-    else if (!cameraVideo.srcObject) cameraVideo.srcObject = stream;
+    else if (!frontCameraVideo.srcObject) frontCameraVideo.srcObject = stream;
+    else if (!backCameraVideo.srcObject) backCameraVideo.srcObject = stream;
     sessionCard.classList.remove('hidden');
     setStatus('Live session connected.');
   };
-  peer.onconnectionstatechange = () => {
-    if (['failed', 'closed', 'disconnected'].includes(peer.connectionState)) {
-      setStatus('Session disconnected.');
+  connection.onconnectionstatechange = () => {
+    if (connection !== peer || explicitDisconnect) return;
+    if (connection.connectionState === 'connected') {
+      setStatus('Live session connected.');
+    } else if (['failed', 'closed', 'disconnected'].includes(connection.connectionState)) {
+      scheduleReconnect();
     }
   };
+  return connection;
 }
 
-async function sendSignal(type, payload) {
+async function sendSignal(type, payload, sessionId = activeSignalSession) {
   const uid = auth.currentUser?.uid;
-  if (!uid || !signalRef) return;
-  await set(push(signalRef), { sender: uid, type, payload });
+  if (!uid || !signalRef || !sessionId) return;
+  await set(push(signalRef), { sender: uid, type, payload, sessionId });
 }
 
 async function handleSignal(data) {
-  if (!data || data.sender === auth.currentUser?.uid) return;
+  if (!data || data.sender === auth.currentUser?.uid || typeof data.sessionId !== 'string') return;
   if (data.type === 'offer') {
-    await peer.setRemoteDescription({ type: 'offer', sdp: data.payload });
+    if (data.sessionId !== activeSignalSession) {
+      activeSignalSession = data.sessionId;
+      clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+      replacePeer({ clearSession: false });
+    }
+    const currentPeer = peer;
+    if (!currentPeer) return;
+    await currentPeer.setRemoteDescription({ type: 'offer', sdp: data.payload });
     remoteDescriptionSet = true;
-    for (const candidate of pendingRemoteIce) await peer.addIceCandidate(candidate);
+    for (const candidate of pendingRemoteIce) await currentPeer.addIceCandidate(candidate);
     pendingRemoteIce = [];
-    const answer = await peer.createAnswer();
-    await peer.setLocalDescription(answer);
-    await sendSignal('answer', answer.sdp);
-  } else if (data.type === 'ice') {
+    const answer = await currentPeer.createAnswer();
+    await currentPeer.setLocalDescription(answer);
+    await sendSignal('answer', answer.sdp, data.sessionId);
+  } else if (data.type === 'ice' && data.sessionId === activeSignalSession) {
     const candidate = JSON.parse(data.payload);
-    if (remoteDescriptionSet) await peer.addIceCandidate(candidate);
+    if (remoteDescriptionSet && peer) await peer.addIceCandidate(candidate);
     else pendingRemoteIce.push(candidate);
   }
+}
+
+function finishLocalSession(message) {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = undefined;
+  roomUnsubscribe?.();
+  roomUnsubscribe = undefined;
+  signalUnsubscribe?.();
+  signalUnsubscribe = undefined;
+  closePeer();
+  roomRef = undefined;
+  signalRef = undefined;
+  pendingRemoteIce = [];
+  remoteDescriptionSet = false;
+  activeSignalSession = undefined;
+  screenVideo.srcObject = null;
+  frontCameraVideo.srcObject = null;
+  backCameraVideo.srcObject = null;
+  sessionCard.classList.add('hidden');
+  connectButton.disabled = !auth.currentUser;
+  setStatus(message);
+}
+
+function watchRoom() {
+  roomUnsubscribe = onValue(roomRef, snapshot => {
+    if (explicitDisconnect) return;
+    if (!snapshot.exists()) {
+      finishLocalSession('The pairing room ended.');
+      return;
+    }
+    if (snapshot.child('closedAt').exists()) {
+      finishLocalSession('The child stopped sharing from the Android device.');
+    }
+  }, error => {
+    if (!explicitDisconnect) setStatus(`Room status error: ${error.message}`);
+  });
 }
 
 async function connect() {
@@ -137,50 +224,59 @@ async function connect() {
     return;
   }
   if (!/^[A-Za-z0-9_-]{6,64}$/.test(room)) {
-    setStatus('Use a one-time pairing code with 6–64 letters, numbers, _ or -.');
+    setStatus('Use a pairing code with 6–64 letters, numbers, _ or -.');
     return;
   }
+  explicitDisconnect = false;
   connectButton.disabled = true;
-  setStatus('Creating a short-lived room…');
+  setStatus('Opening the pairing room…');
   roomRef = ref(database, `rooms/${room}`);
   signalRef = ref(database, `rooms/${room}/signals`);
   pendingRemoteIce = [];
   remoteDescriptionSet = false;
+  activeSignalSession = undefined;
+  let createdHere = false;
   try {
-    await set(roomRef, {
-      createdAt: serverTimestamp(),
-      parentUid: auth.currentUser.uid,
-    });
+    const existing = await get(roomRef);
+    if (existing.exists()) {
+      const data = existing.val() || {};
+      if (data.parentUid !== auth.currentUser.uid) {
+        throw new Error('That pairing code is already in use. Choose a new code.');
+      }
+      if (data.closedAt) {
+        throw new Error('That pairing code was ended from the child device. Choose a new code.');
+      }
+    } else {
+      await set(roomRef, {
+        createdAt: serverTimestamp(),
+        parentUid: auth.currentUser.uid,
+      });
+      createdHere = true;
+    }
+    watchRoom();
     signalUnsubscribe = onChildAdded(signalRef, snapshot => {
-      handleSignal(snapshot.val()).catch(error => setStatus(`Signaling error: ${error.message}`));
+      handleSignal(snapshot.val()).catch(error => {
+        setStatus(`Signaling error: ${error.message}`);
+        scheduleReconnect();
+      });
     });
     createPeer();
     setStatus('Waiting for the child to approve screen/camera sharing…');
   } catch (error) {
-    roomRef = undefined;
-    signalRef = undefined;
-    connectButton.disabled = false;
-    setStatus(`Could not create room: ${error.message}`);
+    if (createdHere && roomRef) {
+      try { await remove(roomRef); } catch (_) { /* cleanup is best effort */ }
+    }
+    finishLocalSession(`Could not open pairing room: ${error.message}`);
   }
 }
 
 async function disconnect() {
-  signalUnsubscribe?.();
-  signalUnsubscribe = undefined;
-  peer?.close();
-  peer = undefined;
-  if (roomRef && auth.currentUser) {
-    try { await remove(roomRef); } catch (_) { /* cleanup is best effort */ }
+  explicitDisconnect = true;
+  const roomToRemove = roomRef;
+  finishLocalSession('Disconnected.');
+  if (roomToRemove && auth.currentUser) {
+    try { await remove(roomToRemove); } catch (_) { /* cleanup is best effort */ }
   }
-  roomRef = undefined;
-  signalRef = undefined;
-  pendingRemoteIce = [];
-  remoteDescriptionSet = false;
-  screenVideo.srcObject = null;
-  cameraVideo.srcObject = null;
-  sessionCard.classList.add('hidden');
-  connectButton.disabled = !auth.currentUser;
-  setStatus('Disconnected.');
 }
 
 onAuthStateChanged(auth, user => {
@@ -191,7 +287,7 @@ onAuthStateChanged(auth, user => {
   signUpButton.classList.toggle('hidden', signedIn);
   signInButton.classList.toggle('hidden', signedIn);
   signOutButton.classList.toggle('hidden', !signedIn);
-  connectButton.disabled = !signedIn || Boolean(peer);
+  connectButton.disabled = !signedIn || Boolean(roomRef);
 });
 
 signUpButton.addEventListener('click', createAccount);

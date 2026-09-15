@@ -22,7 +22,7 @@
           <button id="signout" class="secondary hidden">Sign out</button>
         </div>
         <p id="auth-status" class="status">Not signed in.</p>
-        <label>One-time pairing code<input id="room" autocomplete="off" minlength="6" placeholder="shared code" /></label>
+        <label>Session pairing code<input id="room" autocomplete="off" minlength="6" placeholder="shared code" /></label>
         <button id="connect" disabled>Connect as parent</button>
         <p id="status" class="status">Not connected.</p>
       </section>
@@ -31,7 +31,8 @@
         <div class="toolbar"><div><p class="eyebrow">ACTIVE SESSION</p><h2>Child device</h2></div><button class="danger" id="disconnect">Disconnect</button></div>
         <div class="media-grid">
           <figure><figcaption>Screen</figcaption><video id="screen" autoplay playsinline></video></figure>
-          <figure><figcaption>Camera</figcaption><video id="camera" autoplay playsinline></video></figure>
+          <figure><figcaption>Front camera</figcaption><video id="front-camera" autoplay playsinline></video></figure>
+          <figure><figcaption>Back camera</figcaption><video id="back-camera" autoplay playsinline></video></figure>
         </div>
         <p class="muted small">This dashboard does not retain recordings. Ending the child-side session closes the connection.</p>
       </section>
