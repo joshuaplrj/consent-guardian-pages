@@ -1,53 +1,91 @@
-const workerInput = document.querySelector('#worker');
-const accessInput = document.querySelector('#access');
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js';
+import {
+  createUserWithEmailAndPassword,
+  getAuth,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
+import {
+  getDatabase,
+  onChildAdded,
+  push,
+  ref,
+  remove,
+  set,
+} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-database.js';
+
+const firebaseConfig = {
+  apiKey: 'AIzaSyCN1BZ0JKJKE688Sm8sffl8vSYeBBa7J6k',
+  authDomain: 'consent-guardian.firebaseapp.com',
+  databaseURL: 'https://consent-guardian-default-rtdb.firebaseio.com',
+  projectId: 'consent-guardian',
+  storageBucket: 'consent-guardian.firebasestorage.app',
+  messagingSenderId: '674456363888',
+  appId: '1:674456363888:web:bf6fffae7ce628e404e5b5',
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const auth = getAuth(firebaseApp);
+const database = getDatabase(firebaseApp);
+
+const emailInput = document.querySelector('#email');
+const passwordInput = document.querySelector('#password');
 const roomInput = document.querySelector('#room');
+const signUpButton = document.querySelector('#signup');
+const signInButton = document.querySelector('#signin');
+const signOutButton = document.querySelector('#signout');
 const connectButton = document.querySelector('#connect');
 const disconnectButton = document.querySelector('#disconnect');
+const authStatus = document.querySelector('#auth-status');
 const status = document.querySelector('#status');
-const connectCard = document.querySelector('#connect-card');
 const sessionCard = document.querySelector('#session-card');
 const screenVideo = document.querySelector('#screen');
 const cameraVideo = document.querySelector('#camera');
 
-let socket;
 let peer;
-let parentToken;
+let roomRef;
+let signalRef;
+let signalUnsubscribe;
+let pendingRemoteIce = [];
+let remoteDescriptionSet = false;
 
 const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 function setStatus(message) { status.textContent = message; }
 
-function send(message) {
-  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+function authError(error) {
+  const messages = {
+    'auth/email-already-in-use': 'That email already has an account. Sign in instead.',
+    'auth/invalid-credential': 'The email or password is incorrect.',
+    'auth/invalid-email': 'Enter a valid email address.',
+    'auth/weak-password': 'Use a password with at least 8 characters.',
+  };
+  return messages[error.code] || error.message;
 }
 
-async function connect() {
-  const worker = workerInput.value.trim().replace(/\/$/, '');
-  const accessCode = accessInput.value;
-  const room = roomInput.value.trim();
-  if (!worker.startsWith('https://') || accessCode.length < 8 || room.length < 6) {
-    setStatus('Enter an HTTPS Worker URL, the parent access code, and a pairing code of at least 6 characters.');
-    return;
-  }
-  connectButton.disabled = true;
-  setStatus('Authenticating parent dashboard…');
+async function createAccount() {
   try {
-    const authResponse = await fetch(`${worker}/auth`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ accessCode })
-    });
-    if (!authResponse.ok) throw new Error('parent authentication failed');
-    parentToken = (await authResponse.json()).token;
+    await createUserWithEmailAndPassword(auth, emailInput.value.trim(), passwordInput.value);
+    authStatus.textContent = 'Parent account created and signed in.';
   } catch (error) {
-    setStatus(`Authentication failed: ${error.message}`);
-    connectButton.disabled = false;
-    return;
+    authStatus.textContent = authError(error);
   }
-  setStatus('Authenticated. Waiting for the child device to approve a session…');
+}
+
+async function signIn() {
+  try {
+    await signInWithEmailAndPassword(auth, emailInput.value.trim(), passwordInput.value);
+    authStatus.textContent = 'Signed in.';
+  } catch (error) {
+    authStatus.textContent = authError(error);
+  }
+}
+
+function createPeer() {
   peer = new RTCPeerConnection({ iceServers });
   peer.onicecandidate = event => {
-    if (event.candidate) send({ type: 'ice', candidate: event.candidate });
+    if (event.candidate) sendSignal('ice', JSON.stringify(event.candidate.toJSON()));
   };
   peer.ontrack = event => {
     const track = event.track;
@@ -60,43 +98,104 @@ async function connect() {
     setStatus('Live session connected.');
   };
   peer.onconnectionstatechange = () => {
-    if (['failed', 'closed', 'disconnected'].includes(peer.connectionState)) setStatus('Session disconnected.');
+    if (['failed', 'closed', 'disconnected'].includes(peer.connectionState)) {
+      setStatus('Session disconnected.');
+    }
   };
-  try {
-    const url = worker.replace(/^https:\/\//, 'wss://') + `/signal?room=${encodeURIComponent(room)}&role=parent&token=${encodeURIComponent(parentToken)}`;
-    socket = new WebSocket(url);
-    socket.onopen = () => setStatus('Connected. Waiting for child approval…');
-    socket.onmessage = async event => {
-      const message = JSON.parse(event.data);
-      if (message.type === 'offer') {
-        await peer.setRemoteDescription(message.sdp ? { type: 'offer', sdp: message.sdp } : message.description);
-        const answer = await peer.createAnswer();
-        await peer.setLocalDescription(answer);
-        send({ type: 'answer', sdp: answer.sdp });
-      } else if (message.type === 'ice' && message.candidate) {
-        await peer.addIceCandidate(message.candidate);
-      }
-    };
-    socket.onerror = () => setStatus('Could not connect to the signaling Worker.');
-    socket.onclose = () => setStatus('Signaling connection closed.');
-  } catch (error) {
-    setStatus(`Connection failed: ${error.message}`);
-    connectButton.disabled = false;
+}
+
+async function sendSignal(type, payload) {
+  const uid = auth.currentUser?.uid;
+  if (!uid || !signalRef) return;
+  await set(push(signalRef), { sender: uid, type, payload });
+}
+
+async function handleSignal(data) {
+  if (!data || data.sender === auth.currentUser?.uid) return;
+  if (data.type === 'offer') {
+    await peer.setRemoteDescription({ type: 'offer', sdp: data.payload });
+    remoteDescriptionSet = true;
+    for (const candidate of pendingRemoteIce) await peer.addIceCandidate(candidate);
+    pendingRemoteIce = [];
+    const answer = await peer.createAnswer();
+    await peer.setLocalDescription(answer);
+    await sendSignal('answer', answer.sdp);
+  } else if (data.type === 'ice') {
+    const candidate = JSON.parse(data.payload);
+    if (remoteDescriptionSet) await peer.addIceCandidate(candidate);
+    else pendingRemoteIce.push(candidate);
   }
 }
 
-function disconnect() {
-  socket?.close();
+async function connect() {
+  const room = roomInput.value.trim();
+  if (!auth.currentUser) {
+    setStatus('Sign in before connecting.');
+    return;
+  }
+  if (!/^[A-Za-z0-9_-]{6,64}$/.test(room)) {
+    setStatus('Use a one-time pairing code with 6–64 letters, numbers, _ or -.');
+    return;
+  }
+  connectButton.disabled = true;
+  setStatus('Creating a short-lived room…');
+  roomRef = ref(database, `rooms/${room}`);
+  signalRef = ref(database, `rooms/${room}/signals`);
+  pendingRemoteIce = [];
+  remoteDescriptionSet = false;
+  try {
+    await set(roomRef, {
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      members: { [auth.currentUser.uid]: 'parent' },
+    });
+    signalUnsubscribe = onChildAdded(signalRef, snapshot => {
+      handleSignal(snapshot.val()).catch(error => setStatus(`Signaling error: ${error.message}`));
+    });
+    createPeer();
+    setStatus('Waiting for the child to approve screen/camera sharing…');
+  } catch (error) {
+    roomRef = undefined;
+    signalRef = undefined;
+    connectButton.disabled = false;
+    setStatus(`Could not create room: ${error.message}`);
+  }
+}
+
+async function disconnect() {
+  signalUnsubscribe?.();
+  signalUnsubscribe = undefined;
   peer?.close();
-  socket = undefined;
   peer = undefined;
-  parentToken = undefined;
+  if (roomRef && auth.currentUser) {
+    try { await remove(roomRef); } catch (_) { /* cleanup is best effort */ }
+  }
+  roomRef = undefined;
+  signalRef = undefined;
+  pendingRemoteIce = [];
+  remoteDescriptionSet = false;
   screenVideo.srcObject = null;
   cameraVideo.srcObject = null;
   sessionCard.classList.add('hidden');
-  connectButton.disabled = false;
+  connectButton.disabled = !auth.currentUser;
   setStatus('Disconnected.');
 }
 
+onAuthStateChanged(auth, user => {
+  const signedIn = Boolean(user);
+  authStatus.textContent = signedIn ? `Signed in as ${user.email}` : 'Not signed in.';
+  emailInput.disabled = signedIn;
+  passwordInput.disabled = signedIn;
+  signUpButton.classList.toggle('hidden', signedIn);
+  signInButton.classList.toggle('hidden', signedIn);
+  signOutButton.classList.toggle('hidden', !signedIn);
+  connectButton.disabled = !signedIn || Boolean(peer);
+});
+
+signUpButton.addEventListener('click', createAccount);
+signInButton.addEventListener('click', signIn);
+signOutButton.addEventListener('click', async () => {
+  await disconnect();
+  await signOut(auth);
+});
 connectButton.addEventListener('click', connect);
 disconnectButton.addEventListener('click', disconnect);

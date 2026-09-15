@@ -12,10 +12,18 @@
         <p class="eyebrow">PARENT DASHBOARD</p>
         <h1>Consent Guardian</h1>
         <p class="muted">A live session appears only after the child approves it on their Android device.</p>
-        <label>Signaling Worker URL<input id="worker" type="url" placeholder="https://your-worker.workers.dev" /></label>
-        <label>Parent access code<input id="access" type="password" autocomplete="off" placeholder="Worker access code" /></label>
+        <div class="auth-grid">
+          <label>Email<input id="email" type="email" autocomplete="email" placeholder="parent@example.com" /></label>
+          <label>Password<input id="password" type="password" autocomplete="current-password" minlength="8" placeholder="At least 8 characters" /></label>
+        </div>
+        <div class="button-row">
+          <button id="signup" class="secondary">Create parent account</button>
+          <button id="signin" class="secondary">Sign in</button>
+          <button id="signout" class="secondary hidden">Sign out</button>
+        </div>
+        <p id="auth-status" class="status">Not signed in.</p>
         <label>One-time pairing code<input id="room" autocomplete="off" minlength="6" placeholder="shared code" /></label>
-        <button id="connect">Connect as parent</button>
+        <button id="connect" disabled>Connect as parent</button>
         <p id="status" class="status">Not connected.</p>
       </section>
 
