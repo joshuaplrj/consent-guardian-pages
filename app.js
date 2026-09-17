@@ -55,6 +55,7 @@ let signalUnsubscribe;
 let reconnectTimer;
 let explicitDisconnect = false;
 let pendingRemoteIce = [];
+let pendingIceBySession = new Map();
 let remoteDescriptionSet = false;
 let activeSignalSession;
 
@@ -102,7 +103,10 @@ function closePeer() {
 
 function replacePeer({ clearSession = true } = {}) {
   closePeer();
-  if (clearSession) activeSignalSession = undefined;
+  if (clearSession) {
+    activeSignalSession = undefined;
+    pendingIceBySession.clear();
+  }
   pendingRemoteIce = [];
   remoteDescriptionSet = false;
   return createPeer();
@@ -133,12 +137,18 @@ function createPeer() {
     const streamId = event.streams[0]?.id?.toLowerCase() || '';
     const trackLabel = track.label.toLowerCase();
     const stream = new MediaStream([track]);
-    if (streamId.includes('screen') || trackLabel.includes('screen')) screenVideo.srcObject = stream;
-    else if (streamId.includes('front') || trackLabel.includes('front')) frontCameraVideo.srcObject = stream;
-    else if (streamId.includes('back') || trackLabel.includes('back') || trackLabel.includes('rear')) backCameraVideo.srcObject = stream;
-    else if (!screenVideo.srcObject) screenVideo.srcObject = stream;
-    else if (!frontCameraVideo.srcObject) frontCameraVideo.srcObject = stream;
-    else if (!backCameraVideo.srcObject) backCameraVideo.srcObject = stream;
+    let video;
+    if (streamId.includes('screen') || trackLabel.includes('screen')) video = screenVideo;
+    else if (streamId.includes('front') || trackLabel.includes('front')) video = frontCameraVideo;
+    else if (streamId.includes('back') || trackLabel.includes('back') || trackLabel.includes('rear')) video = backCameraVideo;
+    else if (!screenVideo.srcObject) video = screenVideo;
+    else if (!frontCameraVideo.srcObject) video = frontCameraVideo;
+    else if (!backCameraVideo.srcObject) video = backCameraVideo;
+    if (video) {
+      video.muted = true;
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    }
     sessionCard.classList.remove('hidden');
     setStatus('Live session connected.');
   };
@@ -167,6 +177,8 @@ async function handleSignal(data) {
       clearTimeout(reconnectTimer);
       reconnectTimer = undefined;
       replacePeer({ clearSession: false });
+      pendingRemoteIce = pendingIceBySession.get(data.sessionId) || [];
+      pendingIceBySession.delete(data.sessionId);
     }
     const currentPeer = peer;
     if (!currentPeer) return;
@@ -181,6 +193,11 @@ async function handleSignal(data) {
     const candidate = JSON.parse(data.payload);
     if (remoteDescriptionSet && peer) await peer.addIceCandidate(candidate);
     else pendingRemoteIce.push(candidate);
+  } else if (data.type === 'ice' && !activeSignalSession) {
+    const candidate = JSON.parse(data.payload);
+    const queued = pendingIceBySession.get(data.sessionId) || [];
+    queued.push(candidate);
+    pendingIceBySession.set(data.sessionId, queued);
   }
 }
 
@@ -195,6 +212,7 @@ function finishLocalSession(message) {
   roomRef = undefined;
   signalRef = undefined;
   pendingRemoteIce = [];
+  pendingIceBySession.clear();
   remoteDescriptionSet = false;
   activeSignalSession = undefined;
   screenVideo.srcObject = null;
