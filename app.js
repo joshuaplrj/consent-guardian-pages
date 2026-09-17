@@ -63,6 +63,17 @@ const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 function setStatus(message) { status.textContent = message; }
 
+function attachRemoteVideo(video, stream, track) {
+  video.muted = true;
+  video.autoplay = true;
+  video.playsInline = true;
+  video.srcObject = stream;
+  const play = () => video.play().catch(() => {});
+  track.addEventListener('unmute', play, { once: true });
+  video.addEventListener('loadedmetadata', play, { once: true });
+  play();
+}
+
 function authError(error) {
   const messages = {
     'auth/email-already-in-use': 'That email already has an account. Sign in instead.',
@@ -136,7 +147,7 @@ function createPeer() {
     const track = event.track;
     const streamId = event.streams[0]?.id?.toLowerCase() || '';
     const trackLabel = track.label.toLowerCase();
-    const stream = new MediaStream([track]);
+    const stream = event.streams[0] || new MediaStream([track]);
     let video;
     if (streamId.includes('screen') || trackLabel.includes('screen')) video = screenVideo;
     else if (streamId.includes('front') || trackLabel.includes('front')) video = frontCameraVideo;
@@ -145,9 +156,7 @@ function createPeer() {
     else if (!frontCameraVideo.srcObject) video = frontCameraVideo;
     else if (!backCameraVideo.srcObject) video = backCameraVideo;
     if (video) {
-      video.muted = true;
-      video.srcObject = stream;
-      video.play().catch(() => {});
+      attachRemoteVideo(video, stream, track);
     }
     sessionCard.classList.remove('hidden');
     setStatus('Live session connected.');
