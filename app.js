@@ -65,9 +65,12 @@ function setStatus(message) { status.textContent = message; }
 function authError(error) {
   const messages = {
     'auth/email-already-in-use': 'That email already has an account. Sign in instead.',
-    'auth/invalid-credential': 'The email or password is incorrect.',
+    'auth/invalid-credential': 'No matching parent account was found, or the password is incorrect. New parents should use Create parent account first.',
     'auth/invalid-email': 'Enter a valid email address.',
     'auth/network-request-failed': 'Network unavailable. Check the connection and try again.',
+    'auth/operation-not-allowed': 'Parent sign-in is not enabled for this Firebase project yet.',
+    'auth/too-many-requests': 'Too many sign-in attempts. Wait a moment, then try again.',
+    'auth/user-disabled': 'This parent account has been disabled. Contact the project owner.',
     'auth/weak-password': 'Use a password with at least 8 characters.',
   };
   return messages[error.code] || error.message;
